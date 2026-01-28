@@ -160,6 +160,15 @@ class MainWindow(QWidget):
         y_min, y_max = self.ymin.value(), self.ymax.value()
         dx, dy = self.dx.value(), self.dy.value()
 
+        # -------- IMPORTANT FIX --------
+        # Remove old image item completely
+        self.plot.removeItem(self.image)
+
+        # Create a NEW ImageItem (forces reshape)
+        self.image = pg.ImageItem()
+        self.plot.addItem(self.image)
+
+        # Set new image
         self.image.setImage(grid.T, autoLevels=True)
         self.image.setRect(
             x_min,
@@ -179,6 +188,7 @@ class MainWindow(QWidget):
         self.plot.getAxis("bottom").setTicks([x_ticks])
         self.plot.getAxis("left").setTicks([y_ticks])
 
+        # Hide old highlight
         self.highlight.setVisible(False)
 
     # -------------------------------------------------
