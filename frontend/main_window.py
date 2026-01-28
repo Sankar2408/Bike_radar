@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QPushButton, QRadioButton, QGroupBox,
     QLabel, QDoubleSpinBox, QSizePolicy
 )
+from PySide6.QtCore import QTimer
 import pyqtgraph as pg
 import numpy as np
 
@@ -13,6 +14,9 @@ class MainWindow(QWidget):
 
         self.backend = backend
         self.setWindowTitle("Bike Radar Grid Setup")
+
+        self.grid = None
+        self.current_index = 0
 
         self._build_ui()
         self.backend.grid_ready.connect(self.update_grid)
@@ -28,35 +32,19 @@ class MainWindow(QWidget):
         left_panel = QVBoxLayout()
         left_panel.setSpacing(8)
 
-        # -------- MODE (INDEPENDENT) --------
-        mode_box = QGroupBox("Mode")
-        mode_layout = QHBoxLayout()
-
-        self.auto_btn = QRadioButton("Auto")
-        self.manual_btn = QRadioButton("Manual")
-        self.manual_btn.setChecked(True)
-
-        mode_layout.addWidget(self.auto_btn)
-        mode_layout.addWidget(self.manual_btn)
-        mode_layout.addStretch(1)
-
-        mode_box.setLayout(mode_layout)
-        left_panel.addWidget(mode_box)
-
         # -------- GRID PARAMETERS --------
-        self.param_box = QGroupBox("Grid Parameters")
-        param_layout = QVBoxLayout()
-        param_layout.setSpacing(6)
+        grid_box = QGroupBox("Grid Parameters")
+        grid_layout = QVBoxLayout()
 
-        self.xmin = self._spin("X Min(m)", param_layout, -12.0)
-        self.xmax = self._spin("X Max(m)", param_layout, 12.0)
-        self.ymin = self._spin("Y Min (m)", param_layout, 0.0)
-        self.ymax = self._spin("Y Max (m)", param_layout, 120.0)
-        self.dx   = self._spin("Cell Size X (m)", param_layout, 1.0)
-        self.dy   = self._spin("Cell Size Y (m)", param_layout, 5.0)
+        self.xmin = self._dspin("X Min (deg)", grid_layout, -12.0)
+        self.xmax = self._dspin("X Max (deg)", grid_layout, 12.0)
+        self.ymin = self._dspin("Y Min (m)", grid_layout, 0.0)
+        self.ymax = self._dspin("Y Max (m)", grid_layout, 120.0)
+        self.dx   = self._dspin("Cell Size X (deg)", grid_layout, 1.0)
+        self.dy   = self._dspin("Cell Size Y (m)", grid_layout, 5.0)
 
-        self.param_box.setLayout(param_layout)
-        left_panel.addWidget(self.param_box)
+        grid_box.setLayout(grid_layout)
+        left_panel.addWidget(grid_box)
 
         # -------- CREATE GRID --------
         self.create_btn = QPushButton("Create Grid")
@@ -64,21 +52,42 @@ class MainWindow(QWidget):
         self.create_btn.clicked.connect(self.on_create_grid)
         left_panel.addWidget(self.create_btn)
 
+        # -------- MODE --------
+        mode_box = QGroupBox("Mode")
+        mode_layout = QVBoxLayout()
+
+        self.manual_btn = QRadioButton("Manual")
+        self.auto_btn = QRadioButton("Auto")
+        self.manual_btn.setChecked(True)
+
+        timing_row = QHBoxLayout()
+        timing_row.addWidget(QLabel("Auto step (sec):"))
+        self.auto_interval = QDoubleSpinBox()
+        self.auto_interval.setRange(0.1, 10.0)
+        self.auto_interval.setValue(1.0)
+        self.auto_interval.setSingleStep(0.5)
+        timing_row.addWidget(self.auto_interval)
+
+        mode_layout.addWidget(self.manual_btn)
+        mode_layout.addWidget(self.auto_btn)
+        mode_layout.addLayout(timing_row)
+
+        mode_box.setLayout(mode_layout)
+        left_panel.addWidget(mode_box)
+
         left_panel.addStretch(1)
 
         left_widget = QWidget()
         left_widget.setLayout(left_panel)
-        left_widget.setFixedWidth(320)
-
+        left_widget.setFixedWidth(340)
         root.addWidget(left_widget)
 
         # ================= RIGHT PANEL (PLOT) =================
         self.plot = pg.PlotWidget()
         self.plot.setBackground('k')
-        self.plot.setAspectLocked(False)
         self.plot.showGrid(x=True, y=True, alpha=0.25)
 
-        # Axis behavior controlled ONLY by Create Grid
+        # Fixed axis behavior
         self.plot.enableAutoRange(False, False)
         self.plot.setMouseEnabled(False, False)
 
@@ -87,21 +96,36 @@ class MainWindow(QWidget):
         self.image = pg.ImageItem()
         self.plot.addItem(self.image)
 
+        # Highlight rectangle (selected bin)
+        self.highlight = pg.RectROI(
+            [0, 0], [1, 1],
+            pen=pg.mkPen('r', width=2)
+        )
+        self.highlight.setVisible(False)
+        self.plot.addItem(self.highlight)
+
         self.plot.setLabel("bottom", "Angle (deg)")
         self.plot.setLabel("left", "Range (m)")
 
         self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root.addWidget(self.plot, stretch=1)
 
+        # -------- AUTO TIMER --------
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.auto_step)
+
+        # Connections
+        self.auto_btn.toggled.connect(self.on_mode_change)
+        self.plot.scene().sigMouseClicked.connect(self.on_plot_click)
+
     # -------------------------------------------------
-    # SPIN BOX
+    # DOUBLE SPIN HELPER
     # -------------------------------------------------
-    def _spin(self, label, layout, default):
+    def _dspin(self, label, layout, default):
         row = QHBoxLayout()
         row.addWidget(QLabel(label))
 
         spin = QDoubleSpinBox()
-        spin.setDecimals(2)
         spin.setRange(-1000, 1000)
         spin.setValue(default)
         spin.setFixedWidth(110)
@@ -109,11 +133,10 @@ class MainWindow(QWidget):
         row.addStretch(1)
         row.addWidget(spin)
         layout.addLayout(row)
-
         return spin
 
     # -------------------------------------------------
-    # CREATE GRID (ALWAYS RESCALE)
+    # CREATE GRID
     # -------------------------------------------------
     def on_create_grid(self):
         cfg = {
@@ -124,25 +147,19 @@ class MainWindow(QWidget):
             "dx": self.dx.value(),
             "dy": self.dy.value(),
         }
-
-        # Create grid ALWAYS resets plot
         self.backend.create_grid(cfg)
 
     # -------------------------------------------------
-    # UPDATE GRID + AXES (UNCONDITIONAL)
+    # GRID READY
     # -------------------------------------------------
     def update_grid(self, grid):
-        if grid is None or grid.size == 0:
-            return
+        self.grid = grid
+        self.current_index = 0
 
-        x_min = self.xmin.value()
-        x_max = self.xmax.value()
-        y_min = self.ymin.value()
-        y_max = self.ymax.value()
-        dx = self.dx.value()
-        dy = self.dy.value()
+        x_min, x_max = self.xmin.value(), self.xmax.value()
+        y_min, y_max = self.ymin.value(), self.ymax.value()
+        dx, dy = self.dx.value(), self.dy.value()
 
-        # Update image
         self.image.setImage(grid.T, autoLevels=True)
         self.image.setRect(
             x_min,
@@ -151,13 +168,75 @@ class MainWindow(QWidget):
             y_max - y_min
         )
 
-        # ALWAYS rescale on Create Grid
+        # Lock view
         self.plot.setXRange(x_min, x_max, padding=0)
         self.plot.setYRange(y_min, y_max, padding=0)
 
-        # Explicit ticks
+        # ---- FIXED AXIS TICKS ----
         x_ticks = [(v, f"{v:g}") for v in np.arange(x_min, x_max + dx, dx)]
         y_ticks = [(v, f"{v:g}") for v in np.arange(y_min, y_max + dy, dy)]
 
         self.plot.getAxis("bottom").setTicks([x_ticks])
         self.plot.getAxis("left").setTicks([y_ticks])
+
+        self.highlight.setVisible(False)
+
+    # -------------------------------------------------
+    # MODE CHANGE
+    # -------------------------------------------------
+    def on_mode_change(self):
+        if self.auto_btn.isChecked():
+            self.timer.start(int(self.auto_interval.value() * 1000))
+        else:
+            self.timer.stop()
+
+    # -------------------------------------------------
+    # AUTO STEP (TRAVERSE ALL BINS)
+    # -------------------------------------------------
+    def auto_step(self):
+        if self.grid is None:
+            return
+
+        ny, nx = self.grid.shape
+        total = nx * ny
+
+        idx = self.current_index % total
+        ix = idx % nx
+        iy = idx // nx
+
+        self.highlight_bin(ix, iy)
+        self.current_index += 1
+
+    # -------------------------------------------------
+    # MANUAL CLICK SELECTION
+    # -------------------------------------------------
+    def on_plot_click(self, event):
+        if not self.manual_btn.isChecked() or self.grid is None:
+            return
+
+        pos = event.scenePos()
+        vb = self.plot.getViewBox()
+        pt = vb.mapSceneToView(pos)
+
+        ix = int((pt.x() - self.xmin.value()) / self.dx.value())
+        iy = int((pt.y() - self.ymin.value()) / self.dy.value())
+
+        self.highlight_bin(ix, iy)
+
+    # -------------------------------------------------
+    # HIGHLIGHT BIN
+    # -------------------------------------------------
+    def highlight_bin(self, ix, iy):
+        if self.grid is None:
+            return
+
+        ny, nx = self.grid.shape
+        if ix < 0 or iy < 0 or ix >= nx or iy >= ny:
+            return
+
+        x = self.xmin.value() + ix * self.dx.value()
+        y = self.ymin.value() + iy * self.dy.value()
+
+        self.highlight.setPos([x, y])
+        self.highlight.setSize([self.dx.value(), self.dy.value()])
+        self.highlight.setVisible(True)
