@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QRadioButton, QGroupBox,
-    QLabel, QDoubleSpinBox, QSizePolicy, QFileDialog
+    QLabel, QDoubleSpinBox, QSizePolicy, QFileDialog, QComboBox
 )
 from PySide6.QtCore import QTimer
 import pyqtgraph as pg
@@ -36,6 +36,41 @@ class MainWindow(QWidget):
         left_panel = QVBoxLayout()
         left_panel.setSpacing(8)
 
+        # -------- DEVICE SELECTION --------
+        device_row = QHBoxLayout()
+        device_label = QLabel("Select device:")
+        self.device_combo = QComboBox()
+        self.device_combo.addItems([
+            "Bike Radar",
+            "-- Automotive (AWR series) --",
+            "AWR1243",
+            "AWR1443",
+            "AWR1642",
+            "AWR1843",
+            "AWR2243",
+            "AWR2544",
+            "AWR2944",
+            "AWR2944P",
+            "-- Automotive – AOP / BOOST --",
+            "AWR1843AOP",
+            "AWR1843BOOST",
+            "-- Industrial (IWR series) --",
+            "IWR1443",
+            "IWR1642",
+            "IWR1843",
+            "IWR6843",
+            "-- Industrial – AOP / ISK / BOOST --",
+            "IWR6843AOP",
+            "IWR6843ISK",
+            "IWR6843BOOST",
+            "-- Low-Power Industrial (IWRL series) --",
+            "IWRL6432",
+            "IWRL6432BOOST"
+        ])
+        device_row.addWidget(device_label)
+        device_row.addWidget(self.device_combo)
+        left_panel.addLayout(device_row)
+
         # -------- GRID PARAMETERS --------
         grid_box = QGroupBox("Grid Parameters")
         grid_layout = QVBoxLayout()
@@ -61,6 +96,12 @@ class MainWindow(QWidget):
         self.export_btn.setFixedHeight(30)
         self.export_btn.clicked.connect(self.export_plot)
         left_panel.addWidget(self.export_btn)
+
+        # -------- CLEAR GRID --------
+        self.clear_btn = QPushButton("Clear Grid")
+        self.clear_btn.setFixedHeight(30)
+        self.clear_btn.clicked.connect(self.on_clear_grid)
+        left_panel.addWidget(self.clear_btn)
 
         # -------- MODE --------
         mode_box = QGroupBox("Mode")
@@ -221,6 +262,24 @@ class MainWindow(QWidget):
             autoLevels=False,
             levels=(0, 1)
         )
+
+    # -------------------------------------------------
+    def on_clear_grid(self):
+        if self.grid is None:
+            return
+
+        # Clear grid (all red)
+        self.grid.fill(0)
+
+        # Update image display
+        self.image.setImage(
+            self.grid.T,
+            autoLevels=False,
+            levels=(0, 1)
+        )
+
+        # Hide any highlight rectangle
+        self.highlight.setVisible(False)
 
     # -------------------------------------------------
     def on_mode_change(self):
