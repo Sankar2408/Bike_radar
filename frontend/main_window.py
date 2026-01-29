@@ -16,14 +16,17 @@ class MainWindow(QWidget):
         self.backend = backend
         self.setWindowTitle("Bike Radar Grid Setup")
 
-        self.grid = None
-        self.current_index = 0
+        self.grid = None                 # occupancy grid (0/1)
+        self.current_index = 0           # AUTO traversal index
 
         self._build_ui()
+
+        # Backend connections
         self.backend.grid_ready.connect(self.update_grid)
+        self.backend.radar_points_ready.connect(self.update_radar_points)
 
     # -------------------------------------------------
-    # UI BUILD (SPLIT SCREEN)
+    # UI BUILD
     # -------------------------------------------------
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -53,7 +56,7 @@ class MainWindow(QWidget):
         self.create_btn.clicked.connect(self.on_create_grid)
         left_panel.addWidget(self.create_btn)
 
-        # -------- EXPORT PLOT --------
+        # -------- EXPORT --------
         self.export_btn = QPushButton("Export Plot")
         self.export_btn.setFixedHeight(30)
         self.export_btn.clicked.connect(self.export_plot)
@@ -78,10 +81,9 @@ class MainWindow(QWidget):
         mode_layout.addWidget(self.manual_btn)
         mode_layout.addWidget(self.auto_btn)
         mode_layout.addLayout(timing_row)
-
         mode_box.setLayout(mode_layout)
-        left_panel.addWidget(mode_box)
 
+        left_panel.addWidget(mode_box)
         left_panel.addStretch(1)
 
         left_widget = QWidget()
@@ -89,7 +91,7 @@ class MainWindow(QWidget):
         left_widget.setFixedWidth(340)
         root.addWidget(left_widget)
 
-        # ================= RIGHT PANEL (PLOT) =================
+        # ================= RIGHT PANEL =================
         self.plot = pg.PlotWidget()
         self.plot.setBackground('k')
         self.plot.showGrid(x=True, y=True, alpha=0.25)
@@ -100,13 +102,13 @@ class MainWindow(QWidget):
         self.image = pg.ImageItem()
         self.plot.addItem(self.image)
 
-        # -------- OCCUPANCY LUT (0=RED, 1=GREEN) --------
+        # ---- OCCUPANCY LUT ----
         self.occ_lut = np.array([
             [255,   0,   0, 255],   # 0 → red
             [  0, 255,   0, 255],   # 1 → green
         ], dtype=np.uint8)
 
-        # Highlight rectangle
+        # ---- HIGHLIGHT (AUTO / MANUAL) ----
         self.highlight = pg.RectROI(
             [0, 0], [1, 1],
             pen=pg.mkPen('r', width=2)
@@ -116,8 +118,8 @@ class MainWindow(QWidget):
 
         self.plot.setLabel("bottom", "Angle (deg)")
         self.plot.setLabel("left", "Range (m)")
-
         self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         root.addWidget(self.plot, stretch=1)
 
         # -------- AUTO TIMER --------
@@ -155,24 +157,25 @@ class MainWindow(QWidget):
         self.backend.create_grid(cfg)
 
     # -------------------------------------------------
-    # GRID UPDATE (REAL-TIME OCCUPANCY COLORS)
+    # GRID INITIALIZATION (ON CREATE GRID)
     # -------------------------------------------------
     def update_grid(self, grid):
-        self.grid = grid
         self.current_index = 0
+
+        # Occupancy grid (0/1 only)
+        self.grid = np.zeros_like(grid, dtype=np.uint8)
 
         x_min, x_max = self.xmin.value(), self.xmax.value()
         y_min, y_max = self.ymin.value(), self.ymax.value()
         dx, dy = self.dx.value(), self.dy.value()
 
-        # Reset image to force reshape
+        # Reset image (reshape-safe)
         self.plot.removeItem(self.image)
         self.image = pg.ImageItem()
         self.plot.addItem(self.image)
 
-        # Apply occupancy grid
         self.image.setImage(
-            grid.T,
+            self.grid.T,
             autoLevels=False,
             levels=(0, 1)
         )
@@ -188,13 +191,36 @@ class MainWindow(QWidget):
         self.plot.setXRange(x_min, x_max, padding=0)
         self.plot.setYRange(y_min, y_max, padding=0)
 
-        # Axis ticks
         x_ticks = [(v, f"{v:g}") for v in np.arange(x_min, x_max + dx, dx)]
         y_ticks = [(v, f"{v:g}") for v in np.arange(y_min, y_max + dy, dy)]
         self.plot.getAxis("bottom").setTicks([x_ticks])
         self.plot.getAxis("left").setTicks([y_ticks])
 
         self.highlight.setVisible(False)
+
+    # -------------------------------------------------
+    # BACKEND RADAR UPDATE (OCCUPANCY ONLY)
+    # -------------------------------------------------
+    def update_radar_points(self, points):
+        if self.grid is None:
+            return
+
+        # Clear grid (all red)
+        self.grid.fill(0)
+
+        # Mark detected bins green
+        for p in points:
+            ix = int(p['x'])
+            iy = int(p['y'])
+            if 0 <= iy < self.grid.shape[0] and 0 <= ix < self.grid.shape[1]:
+                self.grid[iy, ix] = 1
+
+        # Update image only (NO reshape, NO axis change)
+        self.image.setImage(
+            self.grid.T,
+            autoLevels=False,
+            levels=(0, 1)
+        )
 
     # -------------------------------------------------
     def on_mode_change(self):
@@ -204,20 +230,22 @@ class MainWindow(QWidget):
             self.timer.stop()
 
     # -------------------------------------------------
+    # AUTO BIN TRAVERSAL (UNCHANGED)
+    # -------------------------------------------------
     def auto_step(self):
         if self.grid is None:
             return
 
         ny, nx = self.grid.shape
-        total = nx * ny
-
-        idx = self.current_index % total
+        idx = self.current_index % (nx * ny)
         ix = idx % nx
         iy = idx // nx
 
         self.highlight_bin(ix, iy)
         self.current_index += 1
 
+    # -------------------------------------------------
+    # MANUAL CLICK
     # -------------------------------------------------
     def on_plot_click(self, event):
         if not self.manual_btn.isChecked() or self.grid is None:
@@ -259,7 +287,6 @@ class MainWindow(QWidget):
             "bike_radar_grid.png",
             "PNG Images (*.png);;JPEG Images (*.jpg)"
         )
-
         if not file_path:
             return
 
